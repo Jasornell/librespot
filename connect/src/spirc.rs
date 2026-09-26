@@ -1240,12 +1240,26 @@ impl SpircTask {
 
         match ctx_uri {
             Some(ref uri) => {
-                self.context_resolver.add(ResolveContext::from_uri(
-                    uri.clone(),
-                    &fallback,
-                    ContextType::Default,
-                    ContextAction::Replace,
-                ));
+                let context = &transfer.current_session.context;
+                if context.metadata.get("lexicon_set_type").map(String::as_str) == Some("your_dj")
+                    && context
+                        .url
+                        .as_deref()
+                        .is_some_and(|url| url.starts_with("hm://lexicon-session-provider/"))
+                {
+                    self.context_resolver.add(ResolveContext::from_context(
+                        context.as_ref().expect("DJ context exists").clone(),
+                        ContextType::Default,
+                        ContextAction::Replace,
+                    ));
+                } else {
+                    self.context_resolver.add(ResolveContext::from_uri(
+                        uri.clone(),
+                        &fallback,
+                        ContextType::Default,
+                        ContextAction::Replace,
+                    ));
+                }
             }
             None => {
                 let all_tracks = transfer
@@ -1692,6 +1706,15 @@ impl SpircTask {
     }
 
     fn add_autoplay_resolving_when_required(&mut self) {
+        // DJ supplies its own next segments. The normal autoplay endpoint
+        // answers 404 for this context, so fetch the DJ page before the
+        // currently buffered segment runs out instead.
+        if self.context_resolver.dj_active() {
+            if !self.connect_state.has_next_tracks(Some(4)) {
+                self.context_resolver.add_dj_page();
+            }
+            return;
+        }
         let require_load_new = !self
             .connect_state
             .has_next_tracks(Some(CONTEXT_FETCH_THRESHOLD))

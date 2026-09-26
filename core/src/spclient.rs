@@ -18,6 +18,7 @@ use crate::{
         },
         connect::PutStateRequest,
         context::Context,
+        context_page::ContextPage,
         extended_metadata::BatchedEntityRequest,
         extended_metadata::{BatchedExtensionResponse, EntityRequest, ExtensionQuery},
         extension_kind::ExtensionKind,
@@ -70,6 +71,8 @@ pub enum SpClientError {
     NoData,
     #[error("expected an entry to exist in {0}")]
     ExpectedEntry(&'static str),
+    #[error("unsupported context URL")]
+    UnsupportedContextUrl,
 }
 
 impl From<SpClientError> for Error {
@@ -909,6 +912,33 @@ impl SpClient {
         }
 
         Ok(ctx?)
+    }
+
+    /// Resolve a DJ context or page through the URL supplied by Spotify's
+    /// Connect state. The regular context URI yields an empty placeholder.
+    async fn get_lexicon_context<T: MessageFull>(&self, url: &str) -> Result<T, Error> {
+        const PREFIX: &str = "hm://lexicon-session-provider/";
+        let path = url
+            .strip_prefix(PREFIX)
+            .filter(|path| !path.is_empty() && !path.contains(".."))
+            .ok_or(SpClientError::UnsupportedContextUrl)?;
+        let endpoint = format!("/lexicon-session-provider/{path}");
+        let bytes = self
+            .request_with_options(&Method::GET, &endpoint, None, None, &NO_METRICS_AND_SALT)
+            .await?;
+        if bytes.is_empty() {
+            Err(SpClientError::NoData)?
+        }
+        let json = std::str::from_utf8(&bytes)?;
+        Ok(protobuf_json_mapping::parse_from_str::<T>(json)?)
+    }
+
+    pub async fn get_context_url(&self, url: &str) -> Result<Context, Error> {
+        self.get_lexicon_context(url).await
+    }
+
+    pub async fn get_context_page_url(&self, url: &str) -> Result<ContextPage, Error> {
+        self.get_lexicon_context(url).await
     }
 
     pub async fn get_autoplay_context(
