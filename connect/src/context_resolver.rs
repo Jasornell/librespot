@@ -26,7 +26,7 @@ const LEXICON_PREFIX: &str = "hm://lexicon-session-provider/";
 
 fn dj_context_url(context: &Context) -> Option<&str> {
     (context.metadata.get("lexicon_set_type").map(String::as_str) == Some("your_dj"))
-        .then(|| context.url.as_deref())
+        .then_some(context.url.as_deref())
         .flatten()
         .filter(|url| url.starts_with(LEXICON_PREFIX))
 }
