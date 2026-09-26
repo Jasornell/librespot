@@ -14,7 +14,7 @@ use crate::{
     model::{LoadRequest, PlayingTrack, SpircPlayStatus},
     playback::{
         mixer::Mixer,
-        player::{Player, PlayerEvent, PlayerEventChannel},
+        player::{DjNarration, Player, PlayerEvent, PlayerEventChannel},
     },
     protocol::{
         connect::{Cluster, ClusterUpdate, LogoutCommand, SetVolumeCommand},
@@ -1827,8 +1827,15 @@ impl SpircTask {
             _ => (),
         }
 
-        if let Some(track_id) = self.connect_state.preview_next_track() {
-            self.player.preload(track_id);
+        if let Some(track) = self.connect_state.preview_next_track()
+            && let Ok(track_id) = SpotifyUri::from_uri(&track.uri)
+        {
+            let narration = self
+                .context_resolver
+                .dj_active()
+                .then(|| DjNarration::from_metadata(&track.metadata))
+                .flatten();
+            self.player.preload_with_narration(track_id, narration);
         }
     }
 
@@ -2063,7 +2070,16 @@ impl SpircTask {
 
         let current_uri = self.connect_state.current_track(|t| &t.uri);
         let id = SpotifyUri::from_uri(current_uri)?;
-        self.player.load(id, start_playing, position_ms);
+        let narration = self
+            .context_resolver
+            .dj_active()
+            .then(|| {
+                self.connect_state
+                    .current_track(|track| DjNarration::from_metadata(&track.metadata))
+            })
+            .flatten();
+        self.player
+            .load_with_narration(id, start_playing, position_ms, narration);
 
         self.connect_state
             .update_position(position_ms, self.now_ms());
