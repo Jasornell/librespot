@@ -20,6 +20,7 @@ use crate::{
         connect::{Cluster, ClusterUpdate, LogoutCommand, SetVolumeCommand},
         context::Context,
         explicit_content_pubsub::UserAttributesUpdate,
+        player::ProvidedTrack,
         playlist4_external::PlaylistModificationInfo,
         social_connect_v2::SessionUpdate,
         transfer_state::TransferState,
@@ -164,6 +165,30 @@ fn embedded_jam_context(transfer: &TransferState) -> Option<Context> {
         }];
     }
     Some(context)
+}
+
+fn transfer_initial_track(
+    state: &ConnectState,
+    transfer: &TransferState,
+    embedded_jam: Option<&Context>,
+) -> Result<ProvidedTrack, Error> {
+    let missing = match state.current_track_from_transfer(transfer) {
+        Ok(track) => return Ok(track),
+        Err(error) => error,
+    };
+    // A Jam can hand over its list without naming a current track, for
+    // example at the end of a previous session. Start at the first row.
+    let Some(context) = embedded_jam else {
+        return Err(missing);
+    };
+    let Some((track, metadata)) = context
+        .pages
+        .iter()
+        .find_map(|page| page.tracks.first().map(|track| (track, &page.metadata)))
+    else {
+        return Err(missing);
+    };
+    state.context_to_provided_track(track, context.uri.as_deref(), Some(0), Some(metadata), None)
 }
 
 /// Social Connect sends a transfer for each Jam edit. It may retain the
@@ -1294,7 +1319,7 @@ impl SpircTask {
                 .unwrap_or(ResetContext::Completely),
         );
 
-        match self.connect_state.current_track_from_transfer(&transfer) {
+        match transfer_initial_track(&self.connect_state, &transfer, embedded_jam.as_ref()) {
             Err(why) => warn!("didn't find initial track: {why}"),
             Ok(track) => {
                 debug!("found initial track <{}>", track.uri);
@@ -2098,7 +2123,7 @@ impl Drop for SpircTask {
 mod recovery_tests {
     use super::*;
     use librespot_protocol::{
-        context_track::ContextTrack, playback::Playback, player::ProvidedTrack, queue::Queue,
+        context_track::ContextTrack, playback::Playback, queue::Queue,
         session::Session as PlaybackSession,
     };
 
@@ -2209,6 +2234,26 @@ mod recovery_tests {
             state.player().next_tracks[0].uri,
             "spotify:track:2FY7b99s15jUprqC0M5NCT"
         );
+    }
+
+    #[tokio::test]
+    async fn jam_list_without_a_current_track_starts_at_its_first_song() {
+        let session = Session::new(Default::default(), None);
+        let mut state = ConnectState::new(Default::default(), &session);
+        let mut transfer = jam_transfer(
+            vec![ContextPage {
+                tracks: vec![track("first"), track("second")],
+                ..Default::default()
+            }],
+            None,
+        );
+        let context = embedded_jam_context(&transfer).unwrap();
+        assert!(state.current_track_from_transfer(&transfer).is_err());
+        state.set_track(transfer_initial_track(&state, &transfer, Some(&context)).unwrap());
+        state.handle_initial_transfer(&mut transfer, Some(JAM_URI.into()));
+        state.update_context(context, ContextType::Default).unwrap();
+        state.finish_transfer(transfer).unwrap();
+        assert_eq!(state.player().track.uri, TRACK_URI);
     }
 
     #[tokio::test]
